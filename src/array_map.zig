@@ -6,19 +6,20 @@ const Allocator = std.mem.Allocator;
 const array_map = @This();
 
 pub fn AutoArrayMap(comptime K: type, comptime V: type) type {
-    return ArrayMap(K, V, std.hash_map.getAutoEqlFn(K));
+    return ArrayMap(K, V, std.hash_map.getAutoEqlFn(K), true);
 }
 
 pub fn ArrayMap(
     comptime K: type,
     comptime V: type,
     comptime eql: fn (a: K, b: K) bool,
+    comptime sorted: bool,
 ) type {
     return struct {
         unmanaged: Unmanaged,
         allocator: *Allocator,
 
-        pub const Unmanaged = ArrayMapUnmanaged(K, V, eql);
+        pub const Unmanaged = ArrayMapUnmanaged(K, V, eql, sorted);
         pub const Entry = Unmanaged.Entry;
         pub const GetOrPutResult = Unmanaged.GetOrPutResult;
 
@@ -169,11 +170,11 @@ pub fn ArrayMap(
     };
 }
 
-
 pub fn ArrayMapUnmanaged(
     comptime K: type,
     comptime V: type,
     comptime eql: fn (a: K, b: K) bool,
+    comptime sorted: bool,
 ) type {
     return struct {
         entries: std.ArrayListUnmanaged(Entry) = .{},
@@ -196,7 +197,7 @@ pub fn ArrayMapUnmanaged(
             ordered,
         };
 
-        pub const Managed = ArrayMap(K, V, eql);
+        pub const Managed = ArrayMap(K, V, eql, sorted);
 
         pub fn promote(self: Self, allocator: *Allocator) Managed {
             return .{
@@ -283,6 +284,15 @@ pub fn ArrayMapUnmanaged(
                 .key = key,
                 .value = undefined,
             };
+            if (sorted) {
+                const impl = struct {
+                    fn inner(context: void, a: Entry, b: Entry) bool {
+                        return std.sort.asc(K)(context, a.key, b.key);
+                    }
+                };
+                // TODO: https://github.com/ziglang/zig/issues/6423
+                std.sort.sort(Entry, self.entries.items, void, impl.inner);
+            }
             return GetOrPutResult{
                 .entry = new_entry,
                 .found_existing = false,
