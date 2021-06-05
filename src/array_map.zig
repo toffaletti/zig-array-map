@@ -287,12 +287,18 @@ pub fn ArrayMapUnmanaged(
                 .value = undefined,
             };
             if (sorted) {
+                //const impl = struct {
+                //    fn inner(context: Context, a: Entry, b: Entry) bool {
+                //        return a.key < b.key;
+                //        //return std.sort.asc(K)(self.ctx, a.key, b.key);
+                //    }
+                //};
+                // TODO: https://github.com/ziglang/zig/issues/6423
                 const impl = struct {
-                    fn inner(context: void, a: Entry, b: Entry) bool {
-                        return std.sort.asc(K)(context, a.key, b.key);
+                    fn inner(comptime context: type, a: anytype, b: anytype) bool {
+                        return a.key < b.key;
                     }
                 };
-                // TODO: https://github.com/ziglang/zig/issues/6423
                 std.sort.sort(Entry, self.entries.items, void, impl.inner);
             }
             return GetOrPutResult{
@@ -300,6 +306,15 @@ pub fn ArrayMapUnmanaged(
                 .found_existing = false,
                 .index = self.entries.items.len - 1,
             };
+        }
+
+        fn getLessThan(comptime T: type) fn (type, anytype, anytype) bool {
+            const impl = struct {
+                fn inner(comptime context: type, a: anytype, b: anytype) bool {
+                    return a.key < b.key;
+                }
+            };
+            return impl.inner;
         }
 
         pub fn getEntry(self: Self, key: K) ?*Entry {
