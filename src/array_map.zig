@@ -6,20 +6,20 @@ const Allocator = std.mem.Allocator;
 const array_map = @This();
 
 pub fn AutoArrayMap(comptime K: type, comptime V: type) type {
-    return ArrayMap(K, V, std.hash_map.getAutoEqlFn(K), true);
+    return ArrayMap(K, V, std.hash_map.AutoContext(K), true);
 }
 
 pub fn ArrayMap(
     comptime K: type,
     comptime V: type,
-    comptime eql: fn (a: K, b: K) bool,
+    comptime Context: type,
     comptime sorted: bool,
 ) type {
     return struct {
         unmanaged: Unmanaged,
         allocator: *Allocator,
 
-        pub const Unmanaged = ArrayMapUnmanaged(K, V, eql, sorted);
+        pub const Unmanaged = ArrayMapUnmanaged(K, V, Context, sorted);
         pub const Entry = Unmanaged.Entry;
         pub const GetOrPutResult = Unmanaged.GetOrPutResult;
 
@@ -173,11 +173,12 @@ pub fn ArrayMap(
 pub fn ArrayMapUnmanaged(
     comptime K: type,
     comptime V: type,
-    comptime eql: fn (a: K, b: K) bool,
+    comptime Context: type,
     comptime sorted: bool,
 ) type {
     return struct {
         entries: std.ArrayListUnmanaged(Entry) = .{},
+        ctx: Context = undefined,
 
         pub const Entry = struct {
             key: K,
@@ -197,7 +198,7 @@ pub fn ArrayMapUnmanaged(
             ordered,
         };
 
-        pub const Managed = ArrayMap(K, V, eql, sorted);
+        pub const Managed = ArrayMap(K, V, Context, sorted);
 
         pub fn promote(self: Self, allocator: *Allocator) Managed {
             return .{
@@ -270,8 +271,9 @@ pub fn ArrayMapUnmanaged(
         }
 
         pub fn getOrPutAssumeCapacity(self: *Self, key: K) GetOrPutResult {
+            // comptime verifyContext(@TypeOf(ctx), @TypeOf(key), K, Hash)
             for (self.entries.items) |*item, i| {
-                if (eql(key, item.key)) {
+                if (self.ctx.eql(key, item.key)) {
                     return GetOrPutResult{
                         .entry = item,
                         .found_existing = true,
@@ -308,7 +310,7 @@ pub fn ArrayMapUnmanaged(
         pub fn getIndex(self: Self, key: K) ?usize {
             // Linear scan.
             for (self.entries.items) |*item, i| {
-                if (eql(key, item.key)) {
+                if (self.ctx.eql(key, item.key)) {
                     return i;
                 }
             }
@@ -387,7 +389,7 @@ pub fn ArrayMapUnmanaged(
         fn removeInternal(self: *Self, key: K, comptime removal_type: RemovalType) ?Entry {
             // Linear scan.
             for (self.entries.items) |item, i| {
-                if (eql(key, item.key)) {
+                if (self.ctx.eql(key, item.key)) {
                     switch (removal_type) {
                         .swap => return self.entries.swapRemove(i),
                         .ordered => return self.entries.orderedRemove(i),
@@ -421,63 +423,63 @@ test "basic array map usage" {
     var map = AutoArrayMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
-    testing.expect((try map.fetchPut(1, 11)) == null);
-    testing.expect((try map.fetchPut(2, 22)) == null);
-    testing.expect((try map.fetchPut(3, 33)) == null);
-    testing.expect((try map.fetchPut(4, 44)) == null);
+    try testing.expect((try map.fetchPut(1, 11)) == null);
+    try testing.expect((try map.fetchPut(2, 22)) == null);
+    try testing.expect((try map.fetchPut(3, 33)) == null);
+    try testing.expect((try map.fetchPut(4, 44)) == null);
 
     try map.putNoClobber(5, 55);
-    testing.expect((try map.fetchPut(5, 66)).?.value == 55);
-    testing.expect((try map.fetchPut(5, 55)).?.value == 66);
+    try testing.expect((try map.fetchPut(5, 66)).?.value == 55);
+    try testing.expect((try map.fetchPut(5, 55)).?.value == 66);
 
     const gop1 = try map.getOrPut(5);
-    testing.expect(gop1.found_existing == true);
-    testing.expect(gop1.entry.value == 55);
-    testing.expect(gop1.index == 4);
+    try testing.expect(gop1.found_existing == true);
+    try testing.expect(gop1.entry.value == 55);
+    try testing.expect(gop1.index == 4);
     gop1.entry.value = 77;
-    testing.expect(map.getEntry(5).?.value == 77);
+    try testing.expect(map.getEntry(5).?.value == 77);
 
     const gop2 = try map.getOrPut(99);
-    testing.expect(gop2.found_existing == false);
-    testing.expect(gop2.index == 5);
+    try testing.expect(gop2.found_existing == false);
+    try testing.expect(gop2.index == 5);
     gop2.entry.value = 42;
-    testing.expect(map.getEntry(99).?.value == 42);
+    try testing.expect(map.getEntry(99).?.value == 42);
 
     const gop3 = try map.getOrPutValue(5, 5);
-    testing.expect(gop3.value == 77);
+    try testing.expect(gop3.value == 77);
 
     const gop4 = try map.getOrPutValue(100, 41);
-    testing.expect(gop4.value == 41);
+    try testing.expect(gop4.value == 41);
 
-    testing.expect(map.contains(2));
-    testing.expect(map.getEntry(2).?.value == 22);
-    testing.expect(map.get(2).? == 22);
+    try testing.expect(map.contains(2));
+    try testing.expect(map.getEntry(2).?.value == 22);
+    try testing.expect(map.get(2).? == 22);
 
     const rmv1 = map.swapRemove(2);
-    testing.expect(rmv1.?.key == 2);
-    testing.expect(rmv1.?.value == 22);
-    testing.expect(map.swapRemove(2) == null);
-    testing.expect(map.getEntry(2) == null);
-    testing.expect(map.get(2) == null);
+    try testing.expect(rmv1.?.key == 2);
+    try testing.expect(rmv1.?.value == 22);
+    try testing.expect(map.swapRemove(2) == null);
+    try testing.expect(map.getEntry(2) == null);
+    try testing.expect(map.get(2) == null);
 
     // Since we've used `swapRemove` above, the index of this entry should remain unchanged.
-    testing.expect(map.getIndex(100).? == 1);
+    try testing.expect(map.getIndex(100).? == 1);
     const gop5 = try map.getOrPut(5);
-    testing.expect(gop5.found_existing == true);
-    testing.expect(gop5.entry.value == 77);
-    testing.expect(gop5.index == 4);
+    try testing.expect(gop5.found_existing == true);
+    try testing.expect(gop5.entry.value == 77);
+    try testing.expect(gop5.index == 4);
 
     // Whereas, if we do an `orderedRemove`, it should move the index forward one spot.
     const rmv2 = map.orderedRemove(100);
-    testing.expect(rmv2.?.key == 100);
-    testing.expect(rmv2.?.value == 41);
-    testing.expect(map.orderedRemove(100) == null);
-    testing.expect(map.getEntry(100) == null);
-    testing.expect(map.get(100) == null);
+    try testing.expect(rmv2.?.key == 100);
+    try testing.expect(rmv2.?.value == 41);
+    try testing.expect(map.orderedRemove(100) == null);
+    try testing.expect(map.getEntry(100) == null);
+    try testing.expect(map.get(100) == null);
     const gop6 = try map.getOrPut(5);
-    testing.expect(gop6.found_existing == true);
-    testing.expect(gop6.entry.value == 77);
-    testing.expect(gop6.index == 3);
+    try testing.expect(gop6.found_existing == true);
+    try testing.expect(gop6.entry.value == 77);
+    try testing.expect(gop6.index == 3);
 
     map.swapRemoveAssertDiscard(3);
 }
@@ -488,13 +490,13 @@ test "ensure capacity" {
 
     try map.ensureCapacity(20);
     const initial_capacity = map.capacity();
-    testing.expect(initial_capacity >= 20);
+    try testing.expect(initial_capacity >= 20);
     var i: i32 = 0;
     while (i < 20) : (i += 1) {
-        testing.expect(map.fetchPutAssumeCapacity(i, i + 10) == null);
+        try testing.expect(map.fetchPutAssumeCapacity(i, i + 10) == null);
     }
     // shouldn't resize from putAssumeCapacity
-    testing.expect(initial_capacity == map.capacity());
+    try testing.expect(initial_capacity == map.capacity());
 }
 
 test "clone" {
@@ -511,7 +513,7 @@ test "clone" {
 
     i = 0;
     while (i < 10) : (i += 1) {
-        testing.expect(copy.get(i).? == i * 10);
+        try testing.expect(copy.get(i).? == i * 10);
     }
 }
 
@@ -522,34 +524,34 @@ test "shrink" {
     const num_entries = 20;
     var i: i32 = 0;
     while (i < num_entries) : (i += 1)
-        testing.expect((try map.fetchPut(i, i * 10)) == null);
+        try testing.expect((try map.fetchPut(i, i * 10)) == null);
 
-    testing.expect(map.count() == num_entries);
+    try testing.expect(map.count() == num_entries);
 
     // Test `shrinkRetainingCapacity`.
     map.shrinkRetainingCapacity(17);
-    testing.expect(map.count() == 17);
-    testing.expect(map.capacity() == 20);
+    try testing.expect(map.count() == 17);
+    try testing.expect(map.capacity() == 20);
     i = 0;
     while (i < num_entries) : (i += 1) {
         const gop = try map.getOrPut(i);
         if (i < 17) {
-            testing.expect(gop.found_existing == true);
-            testing.expect(gop.entry.value == i * 10);
-        } else testing.expect(gop.found_existing == false);
+            try testing.expect(gop.found_existing == true);
+            try testing.expect(gop.entry.value == i * 10);
+        } else try testing.expect(gop.found_existing == false);
     }
 
     // Test `shrinkAndFree`.
     map.shrinkAndFree(15);
-    testing.expect(map.count() == 15);
-    testing.expect(map.capacity() == 15);
+    try testing.expect(map.count() == 15);
+    try testing.expect(map.capacity() == 15);
     i = 0;
     while (i < num_entries) : (i += 1) {
         const gop = try map.getOrPut(i);
         if (i < 15) {
-            testing.expect(gop.found_existing == true);
-            testing.expect(gop.entry.value == i * 10);
-        } else testing.expect(gop.found_existing == false);
+            try testing.expect(gop.found_existing == true);
+            try testing.expect(gop.entry.value == i * 10);
+        } else try testing.expect(gop.found_existing == false);
     }
 }
 
@@ -557,19 +559,19 @@ test "pop" {
     var map = AutoArrayMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
-    testing.expect((try map.fetchPut(1, 11)) == null);
-    testing.expect((try map.fetchPut(2, 22)) == null);
-    testing.expect((try map.fetchPut(3, 33)) == null);
-    testing.expect((try map.fetchPut(4, 44)) == null);
+    try testing.expect((try map.fetchPut(1, 11)) == null);
+    try testing.expect((try map.fetchPut(2, 22)) == null);
+    try testing.expect((try map.fetchPut(3, 33)) == null);
+    try testing.expect((try map.fetchPut(4, 44)) == null);
 
     const pop1 = map.pop();
-    testing.expect(pop1.key == 4 and pop1.value == 44);
+    try testing.expect(pop1.key == 4 and pop1.value == 44);
     const pop2 = map.pop();
-    testing.expect(pop2.key == 3 and pop2.value == 33);
+    try testing.expect(pop2.key == 3 and pop2.value == 33);
     const pop3 = map.pop();
-    testing.expect(pop3.key == 2 and pop3.value == 22);
+    try testing.expect(pop3.key == 2 and pop3.value == 22);
     const pop4 = map.pop();
-    testing.expect(pop4.key == 1 and pop4.value == 11);
+    try testing.expect(pop4.key == 1 and pop4.value == 11);
 }
 
 test "items array map" {
@@ -602,11 +604,11 @@ test "items array map" {
         buffer[@intCast(usize, entry.key)] = entry.value;
         count += 1;
     }
-    testing.expect(count == 3);
-    testing.expect(reset_map.count() == count);
+    try testing.expect(count == 3);
+    try testing.expect(reset_map.count() == count);
 
     for (buffer) |v, i| {
-        testing.expect(buffer[@intCast(usize, keys[i])] == values[i]);
+        try testing.expect(buffer[@intCast(usize, keys[i])] == values[i]);
     }
 
     count = 0;
@@ -617,12 +619,12 @@ test "items array map" {
     }
 
     for (buffer[0..2]) |v, i| {
-        testing.expect(buffer[@intCast(usize, keys[i])] == values[i]);
+        try testing.expect(buffer[@intCast(usize, keys[i])] == values[i]);
     }
 
     var entry = reset_map.items()[0];
-    testing.expect(entry.key == first_entry.key);
-    testing.expect(entry.value == first_entry.value);
+    try testing.expect(entry.key == first_entry.key);
+    try testing.expect(entry.value == first_entry.value);
 }
 
 test "capacity" {
@@ -634,15 +636,15 @@ test "capacity" {
     try map.put(3, 33);
     try map.put(4, 44);
 
-    testing.expect(map.count() == 4);
+    try testing.expect(map.count() == 4);
     const capacity = map.capacity();
-    testing.expect(capacity >= map.count());
+    try testing.expect(capacity >= map.count());
 
     map.clearRetainingCapacity();
 
-    testing.expect(map.count() == 0);
-    testing.expect(map.capacity() == capacity);
+    try testing.expect(map.count() == 0);
+    try testing.expect(map.capacity() == capacity);
 
     map.clearAndFree();
-    testing.expect(map.capacity() == 0);
+    try testing.expect(map.capacity() == 0);
 }
