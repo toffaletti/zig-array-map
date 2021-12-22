@@ -17,7 +17,7 @@ pub fn ArrayMap(
 ) type {
     return struct {
         unmanaged: Unmanaged,
-        allocator: *Allocator,
+        allocator: Allocator,
 
         pub const Unmanaged = ArrayMapUnmanaged(K, V, Context, sorted);
         pub const Entry = Unmanaged.Entry;
@@ -25,7 +25,7 @@ pub fn ArrayMap(
 
         const Self = @This();
 
-        pub fn init(allocator: *Allocator) Self {
+        pub fn init(allocator: Allocator) Self {
             return .{
                 .unmanaged = .{},
                 .allocator = allocator,
@@ -49,10 +49,16 @@ pub fn ArrayMap(
             return self.unmanaged.count();
         }
 
-        /// Increases capacity, guaranteeing that insertions up until the
-        /// `expected_count` will not cause an allocation, and therefore cannot fail.
-        pub fn ensureCapacity(self: *Self, new_capacity: usize) !void {
-            return self.unmanaged.ensureCapacity(self.allocator, new_capacity);
+        /// Modify the array so that it can hold at least `new_capacity` items.
+        /// Invalidates pointers if additional memory is needed.
+        pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) !void {
+            return self.unmanaged.ensureTotalCapacity(self.allocator, new_capacity);
+        }
+
+        /// Modify the array so that it can hold at least `additional_count` **more** items.
+        /// Invalidates pointers if additional memory is needed.
+        pub fn ensureUnusedCapacity(self: *Self, additional_count: usize) !void {
+            return self.unmanaged.ensureUnusedCapacity(self.allocator, additional_count);
         }
 
         /// Returns the number of total elements which may be present before it is
@@ -200,7 +206,7 @@ pub fn ArrayMapUnmanaged(
 
         pub const Managed = ArrayMap(K, V, Context, sorted);
 
-        pub fn promote(self: Self, allocator: *Allocator) Managed {
+        pub fn promote(self: Self, allocator: Allocator) Managed {
             return .{
                 .unmanaged = self,
                 .allocator = allocator,
@@ -211,7 +217,7 @@ pub fn ArrayMapUnmanaged(
             return self.entries.items.len;
         }
 
-        pub fn deinit(self: *Self, allocator: *Allocator) void {
+        pub fn deinit(self: *Self, allocator: Allocator) void {
             self.entries.deinit(allocator);
             self.* = undefined;
         }
@@ -220,12 +226,20 @@ pub fn ArrayMapUnmanaged(
             self.entries.items.len = 0;
         }
 
-        pub fn clearAndFree(self: *Self, allocator: *Allocator) void {
+        pub fn clearAndFree(self: *Self, allocator: Allocator) void {
             self.entries.shrinkAndFree(allocator, 0);
         }
 
-        pub fn ensureCapacity(self: *Self, allocator: *Allocator, new_capacity: usize) !void {
-            try self.entries.ensureCapacity(allocator, new_capacity);
+        /// Modify the array so that it can hold at least `new_capacity` items.
+        /// Invalidates pointers if additional memory is needed.
+        pub fn ensureTotalCapacity(self: *Self, allocator: Allocator, new_capacity: usize) !void {
+            try self.entries.ensureTotalCapacity(allocator, new_capacity);
+        }
+
+        /// Modify the array so that it can hold at least `additional_count` **more** items.
+        /// Invalidates pointers if additional memory is needed.
+        pub fn ensureUnusedCapacity(self: *Self, allocator: Allocator, additional_count: usize) !void {
+            try self.entries.ensureUnusedCapacity(allocator, additional_count);
         }
 
         /// Returns the number of total elements which may be present before it is
@@ -236,21 +250,21 @@ pub fn ArrayMapUnmanaged(
 
         /// Clobbers any existing data. To detect if a put would clobber
         /// existing data, see `getOrPut`.
-        pub fn put(self: *Self, allocator: *Allocator, key: K, value: V) !void {
+        pub fn put(self: *Self, allocator: Allocator, key: K, value: V) !void {
             const result = try self.getOrPut(allocator, key);
             result.entry.value = value;
         }
 
         /// Inserts a key-value pair into the map, asserting that no previous
         /// entry with the same key is already present
-        pub fn putNoClobber(self: *Self, allocator: *Allocator, key: K, value: V) !void {
+        pub fn putNoClobber(self: *Self, allocator: Allocator, key: K, value: V) !void {
             const result = try self.getOrPut(allocator, key);
             assert(!result.found_existing);
             result.entry.value = value;
         }
 
-        pub fn getOrPut(self: *Self, allocator: *Allocator, key: K) !GetOrPutResult {
-            self.ensureCapacity(allocator, self.entries.items.len + 1) catch |err| {
+        pub fn getOrPut(self: *Self, allocator: Allocator, key: K) !GetOrPutResult {
+            self.ensureUnusedCapacity(allocator, 1) catch |err| {
                 // "If key exists this function cannot fail."
                 const index = self.getIndex(key) orelse return err;
                 return GetOrPutResult{
@@ -262,7 +276,7 @@ pub fn ArrayMapUnmanaged(
             return self.getOrPutAssumeCapacity(key);
         }
 
-        pub fn getOrPutValue(self: *Self, allocator: *Allocator, key: K, value: V) !*Entry {
+        pub fn getOrPutValue(self: *Self, allocator: Allocator, key: K, value: V) !*Entry {
             const res = try self.getOrPut(allocator, key);
             if (!res.found_existing)
                 res.entry.value = value;
@@ -296,6 +310,7 @@ pub fn ArrayMapUnmanaged(
                 // TODO: https://github.com/ziglang/zig/issues/6423
                 const impl = struct {
                     fn inner(comptime context: type, a: anytype, b: anytype) bool {
+                        _ = context;
                         return a.key < b.key;
                     }
                 };
@@ -308,9 +323,10 @@ pub fn ArrayMapUnmanaged(
             };
         }
 
-        fn getLessThan(comptime T: type) fn (type, anytype, anytype) bool {
+        fn getLessThan(comptime _: type) fn (type, anytype, anytype) bool {
             const impl = struct {
                 fn inner(comptime context: type, a: anytype, b: anytype) bool {
+                    _ = context;
                     return a.key < b.key;
                 }
             };
@@ -337,7 +353,7 @@ pub fn ArrayMapUnmanaged(
         }
 
         /// Inserts a new `Entry` into the map, returning the previous one, if any.
-        pub fn fetchPut(self: *Self, allocator: *Allocator, key: K, value: V) !?Entry {
+        pub fn fetchPut(self: *Self, allocator: Allocator, key: K, value: V) !?Entry {
             const gop = try self.getOrPut(allocator, key);
             var result: ?Entry = null;
             if (gop.found_existing) {
@@ -395,7 +411,7 @@ pub fn ArrayMapUnmanaged(
             return self.entries.items;
         }
 
-        pub fn clone(self: Self, allocator: *Allocator) !Self {
+        pub fn clone(self: Self, allocator: Allocator) !Self {
             var other: Self = .{};
             try other.entries.appendSlice(allocator, self.entries.items);
             return other;
@@ -422,7 +438,7 @@ pub fn ArrayMapUnmanaged(
 
         /// Shrinks the underlying `Entry` array to `new_len` elements.
         /// Reduces allocated capacity.
-        pub fn shrinkAndFree(self: *Self, allocator: *Allocator, new_len: usize) void {
+        pub fn shrinkAndFree(self: *Self, allocator: Allocator, new_len: usize) void {
             self.entries.shrinkAndFree(allocator, new_len);
         }
 
@@ -503,7 +519,7 @@ test "ensure capacity" {
     var map = AutoArrayMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
-    try map.ensureCapacity(20);
+    try map.ensureTotalCapacity(20);
     const initial_capacity = map.capacity();
     try testing.expect(initial_capacity >= 20);
     var i: i32 = 0;
@@ -594,7 +610,7 @@ test "items array map" {
     defer reset_map.deinit();
 
     // test ensureCapacity with a 0 parameter
-    try reset_map.ensureCapacity(0);
+    try reset_map.ensureTotalCapacity(0);
 
     try reset_map.putNoClobber(0, 11);
     try reset_map.putNoClobber(1, 22);
@@ -622,7 +638,7 @@ test "items array map" {
     try testing.expect(count == 3);
     try testing.expect(reset_map.count() == count);
 
-    for (buffer) |v, i| {
+    for (buffer) |_, i| {
         try testing.expect(buffer[@intCast(usize, keys[i])] == values[i]);
     }
 
@@ -633,7 +649,7 @@ test "items array map" {
         if (count >= 2) break;
     }
 
-    for (buffer[0..2]) |v, i| {
+    for (buffer[0..2]) |_, i| {
         try testing.expect(buffer[@intCast(usize, keys[i])] == values[i]);
     }
 
